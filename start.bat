@@ -32,10 +32,19 @@ if %errorlevel% equ 0 (
 )
 
 :: Check for Python and pin the exact interpreter we will use later.
+:: Prefer supported CPython versions (3.10-3.12) before falling back to the
+:: default `python`/`py -3` interpreter, because some legacy dependencies
+:: (e.g. feedparser==6.0.10) are not compatible with Python 3.13+.
 set "PYTHON_EXE="
-for /f "usebackq delims=" %%p in (`python -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+for /f "usebackq delims=" %%p in (`py -3.12 -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
 if not defined PYTHON_EXE (
     for /f "usebackq delims=" %%p in (`py -3.11 -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+)
+if not defined PYTHON_EXE (
+    for /f "usebackq delims=" %%p in (`py -3.10 -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
+)
+if not defined PYTHON_EXE (
+    for /f "usebackq delims=" %%p in (`python -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
 )
 if not defined PYTHON_EXE (
     for /f "usebackq delims=" %%p in (`py -3 -c "import sys; print(sys.executable)" 2^>nul`) do if not defined PYTHON_EXE set "PYTHON_EXE=%%p"
@@ -148,7 +157,7 @@ set "BACKEND_VENV_DIR=%VENV_DIR%"
 if not exist "%VENV_DIR%\" (
     echo [*] Creating Python virtual environment...
     if exist "%VENV_DIR%\" rmdir /s /q "%VENV_DIR%" >nul 2>&1
-    uv venv "%VENV_DIR%"
+    uv venv --seed "%VENV_DIR%"
     if errorlevel 1 (
         echo [!] ERROR: Failed to create virtual environment.
         pause
@@ -164,10 +173,18 @@ if errorlevel 1 (
 echo [*] Installing Python dependencies via UV (fast)...
 cd /d "%ROOT%"
 set "UV_PROJECT_ENVIRONMENT=%ROOT%\backend\%VENV_DIR%"
-uv sync --frozen --no-dev
+uv sync --frozen --no-dev --package backend
 set "UV_PROJECT_ENVIRONMENT="
 if %errorlevel% neq 0 goto :dep_fail
 cd /d "%ROOT%\backend"
+:: UV sync can report success while leaving the venv empty on some lock/interpreter
+:: combinations. Double-check that the runtime dependencies are actually present.
+"%VENV_PY%" -c "import fastapi, uvicorn" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [!] UV sync did not install runtime dependencies; falling back to pip...
+    "%VENV_PY%" -m pip install -q .
+    if %errorlevel% neq 0 goto :dep_fail
+)
 goto :deps_ok
 
 :use_pip
